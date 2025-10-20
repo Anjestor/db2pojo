@@ -4,10 +4,9 @@ import org.apache.maven.plugin.AbstractMojo;
 import org.apache.maven.plugin.MojoExecutionException;
 import org.apache.maven.plugins.annotations.*;
 
-import java.io.File;
 import java.io.FileWriter;
 import java.sql.*;
-import java.util.*;
+import java.util.Locale;
 
 @Mojo(name = "generate", defaultPhase = LifecyclePhase.GENERATE_SOURCES)
 public class JpaEntityGeneratorMojo extends AbstractMojo {
@@ -31,8 +30,6 @@ public class JpaEntityGeneratorMojo extends AbstractMojo {
         try (Connection conn = DriverManager.getConnection(jdbcUrl, username, password)) {
             DatabaseMetaData meta = conn.getMetaData();
 
-            new File(outputDirectory).mkdirs();
-
             try (ResultSet tables = meta.getTables(null, null, "%", new String[]{"TABLE"})) {
                 while (tables.next()) {
                     String tableName = tables.getString("TABLE_NAME");
@@ -40,7 +37,7 @@ public class JpaEntityGeneratorMojo extends AbstractMojo {
                 }
             }
 
-            getLog().info("✅ JPA Entities with relationships generated in: " + outputDirectory);
+            getLog().info("✅ JPA Entities generated into: " + outputDirectory);
         } catch (Exception e) {
             throw new MojoExecutionException("Failed to generate entities", e);
         }
@@ -57,16 +54,6 @@ public class JpaEntityGeneratorMojo extends AbstractMojo {
                 .append("@Table(name = \"").append(tableName).append("\")\n")
                 .append("public class ").append(className).append(" implements Serializable {\n\n");
 
-        // Collect foreign keys
-        Map<String, String> fkToTable = new HashMap<>();
-        try (ResultSet fkRs = meta.getImportedKeys(null, null, tableName)) {
-            while (fkRs.next()) {
-                String fkColumn = fkRs.getString("FKCOLUMN_NAME");
-                String pkTable = fkRs.getString("PKTABLE_NAME");
-                fkToTable.put(fkColumn, pkTable);
-            }
-        }
-
         String primaryKeyColumn = null;
         try (ResultSet pkRs = meta.getPrimaryKeys(null, null, tableName)) {
             if (pkRs.next()) primaryKeyColumn = pkRs.getString("COLUMN_NAME");
@@ -80,53 +67,31 @@ public class JpaEntityGeneratorMojo extends AbstractMojo {
                 String columnType = rs.getString("TYPE_NAME");
                 int size = rs.getInt("COLUMN_SIZE");
 
-                // Foreign key case → generate relation instead of primitive field
-                if (fkToTable.containsKey(columnName)) {
-                    String targetTable = fkToTable.get(columnName);
-                    String targetClass = toCamelCase(targetTable, true);
-                    String fieldName = toCamelCase(targetTable, false);
+                String javaType = mapSqlTypeToJava(columnType, size);
+                String fieldName = toCamelCase(columnName, false);
 
-                    classBuilder.append("    @ManyToOne(fetch = FetchType.LAZY)\n")
-                            .append("    @JoinColumn(name = \"").append(columnName).append("\")\n")
-                            .append("    private ").append(targetClass).append(" ").append(fieldName).append(";\n\n");
-
-                    // getter
-                    gettersSetters.append("    public ").append(targetClass)
-                            .append(" get").append(toCamelCase(targetTable, true)).append("() {\n")
-                            .append("        return ").append(fieldName).append(";\n    }\n\n");
-
-                    // setter
-                    gettersSetters.append("    public void set").append(toCamelCase(targetTable, true))
-                            .append("(").append(targetClass).append(" ").append(fieldName)
-                            .append(") {\n        this.").append(fieldName).append(" = ").append(fieldName)
-                            .append(";\n    }\n\n");
-                } else {
-                    String javaType = mapSqlTypeToJava(columnType, size);
-                    String fieldName = toCamelCase(columnName, false);
-
-                    classBuilder.append("    @Column(name = \"").append(columnName).append("\")\n");
-                    if (columnName.equalsIgnoreCase(primaryKeyColumn)) {
-                        classBuilder.append("    @Id\n");
-                        if (columnType.toUpperCase(Locale.ROOT).contains("SERIAL")
-                            || columnType.toUpperCase(Locale.ROOT).contains("IDENTITY")) {
-                            classBuilder.append("    @GeneratedValue(strategy = GenerationType.IDENTITY)\n");
-                        }
+                classBuilder.append("    @Column(name = \"").append(columnName).append("\")\n");
+                if (columnName.equalsIgnoreCase(primaryKeyColumn)) {
+                    classBuilder.append("    @Id\n");
+                    if (columnType.toUpperCase(Locale.ROOT).contains("SERIAL")
+                        || columnType.toUpperCase(Locale.ROOT).contains("IDENTITY")) {
+                        classBuilder.append("    @GeneratedValue(strategy = GenerationType.IDENTITY)\n");
                     }
-
-                    classBuilder.append("    private ").append(javaType)
-                            .append(" ").append(fieldName).append(";\n\n");
-
-                    // getter
-                    gettersSetters.append("    public ").append(javaType)
-                            .append(" get").append(toCamelCase(columnName, true)).append("() {\n")
-                            .append("        return ").append(fieldName).append(";\n    }\n\n");
-
-                    // setter
-                    gettersSetters.append("    public void set").append(toCamelCase(columnName, true))
-                            .append("(").append(javaType).append(" ").append(fieldName)
-                            .append(") {\n        this.").append(fieldName).append(" = ").append(fieldName)
-                            .append(";\n    }\n\n");
                 }
+
+                classBuilder.append("    private ").append(javaType)
+                        .append(" ").append(fieldName).append(";\n\n");
+
+                gettersSetters.append("    public ").append(javaType)
+                        .append(" get").append(toCamelCase(columnName, true)).append("() {\n")
+                        .append("        return ").append(fieldName).append(";\n")
+                        .append("    }\n\n");
+
+                gettersSetters.append("    public void set")
+                        .append(toCamelCase(columnName, true)).append("(").append(javaType)
+                        .append(" ").append(fieldName).append(") {\n")
+                        .append("        this.").append(fieldName).append(" = ").append(fieldName).append(";\n")
+                        .append("    }\n\n");
             }
         }
 
@@ -167,4 +132,4 @@ public class JpaEntityGeneratorMojo extends AbstractMojo {
             default: return "String";
         }
     }
-}
+                                            }
